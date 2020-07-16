@@ -23,6 +23,7 @@ from tensorflow_federated.python.common_libs import test
 from tensorflow_federated.python.research.targeted_attack import aggregate_fn
 from tensorflow_federated.python.research.targeted_attack import attacked_fedavg
 from tensorflow_federated.python.research.targeted_attack.attacked_fedavg import build_federated_averaging_process_attacked
+from tensorflow_federated.python.research.targeted_attack import emnist_with_targeted_attack as em
 
 _Batch = collections.namedtuple('Batch', ['x', 'y'])
 
@@ -318,6 +319,7 @@ class AggregationTest(tf.test.TestCase):
                                           initial_weights._asdict())
     self.assertLess(attacked_fedavg._get_norm(weights_delta), l2_norm * 1.1)
 
+    
   def test_aggregate_and_clip(self):
     """Test whether the norm clipping is done successfully."""
     client_data = create_client_data()
@@ -338,5 +340,30 @@ class AggregationTest(tf.test.TestCase):
     self.assertLess(attacked_fedavg._get_norm(weights_delta), l2_norm * 1.01)
 
 
+  def test_malicious_nodes(self):
+    """Test whether the norm clipping is done successfully."""
+    l2_norm = 0.01
+    aggregate_clip = aggregate_fn.build_aggregate_and_clip(norm_bound=l2_norm)
+    trainer = build_federated_averaging_process_attacked(
+        _model_fn, stateful_delta_aggregate_fn=aggregate_clip)
+    state = trainer.initialize()
+    initial_weights = state.model.trainable
+    
+    emnist_train, _ = tff.simulation.datasets.emnist.load_data(
+      only_digits=True)
+    dataset_malicious, target_x, target_y = em.load_malicious_dataset(30)
+    
+    federated_train_data, federated_malicious_data, client_type_list = \
+        em.sample_clients_with_malicious(
+            emnist_train, client_ids=emnist_train.client_ids,
+            dataset_malicious=dataset_malicious,
+            num_clients=5, with_attack=1)
+    
+    state, _ = trainer.next(state, federated_train_data, federated_malicious_data, client_type_list)
+    weights_delta = tf.nest.map_structure(tf.subtract,
+                                          state.model.trainable._asdict(),
+                                          initial_weights._asdict())
+    self.assertLess(attacked_fedavg._get_norm(weights_delta), l2_norm * 1.01)
+    
 if __name__ == '__main__':
   tf.test.main()
