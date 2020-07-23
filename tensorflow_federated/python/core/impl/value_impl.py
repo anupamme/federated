@@ -29,7 +29,9 @@ from tensorflow_federated.python.core.impl import tensorflow_serialization
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
+from tensorflow_federated.python.core.impl.context_stack import context_base
 from tensorflow_federated.python.core.impl.context_stack import context_stack_base
+from tensorflow_federated.python.core.impl.context_stack import symbol_binding_context
 from tensorflow_federated.python.core.impl.types import placement_literals
 from tensorflow_federated.python.core.impl.types import type_analysis
 from tensorflow_federated.python.core.impl.types import type_conversions
@@ -51,11 +53,22 @@ def _is_named_tuple(vimpl: 'ValueImpl') -> bool:
 def _check_is_optionally_federated_named_tuple(
     vimpl: 'ValueImpl',
     context_name: str,
-) -> bool:
+):
   if not (_is_named_tuple(vimpl) or _is_federated_named_tuple(vimpl)):
     raise TypeError('{} is only supported for named tuples, but the '
                     'object on which it has been invoked is of type {}.'.format(
                         context_name, vimpl._comp.type_signature))  # pylint: disable=protected-access
+
+
+def _check_symbol_binding_context(context: context_base.Context):
+  if not isinstance(context, symbol_binding_context.SymbolBindingContext):
+    raise context_base.ContextError('TFF values should only be materialized '
+                                    'inside a context which can bind '
+                                    'references, generally a '
+                                    '`FederatedComputationContext`. Attempted '
+                                    'to materialize a TFF value in a context '
+                                    '{c} of type {t}.'.format(
+                                        c=context, t=type(context)))
 
 
 class ValueImpl(value_base.Value, metaclass=abc.ABCMeta):
@@ -85,6 +98,7 @@ class ValueImpl(value_base.Value, metaclass=abc.ABCMeta):
     """
     py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
     py_typecheck.check_type(context_stack, context_stack_base.ContextStack)
+    _check_symbol_binding_context(context_stack.current)
     # We override `__setattr__` for `ValueImpl` and so must assign fields using
     # the `__setattr__` impl on the superclass (rather than simply using
     # e.g. `self._comp = comp`.
@@ -146,9 +160,10 @@ class ValueImpl(value_base.Value, metaclass=abc.ABCMeta):
       return
     named_tuple_setattr_lambda = building_block_factory.create_named_tuple_setattr_lambda(
         self._comp.type_signature, name, value_comp)
-    # TODO(b/159281959): Follow up and bind a reference here.
     new_comp = building_blocks.Call(named_tuple_setattr_lambda, self._comp)
-    super().__setattr__('_comp', new_comp)
+    fc_context = self._context_stack.current
+    ref = fc_context.bind_computation_to_reference(new_comp)
+    super().__setattr__('_comp', ref)
 
   def __bool__(self):
     raise TypeError(
@@ -236,17 +251,16 @@ class ValueImpl(value_base.Value, metaclass=abc.ABCMeta):
     if not self.type_signature.is_equivalent_to(other.type_signature):
       raise TypeError('Cannot add {} and {}.'.format(self.type_signature,
                                                      other.type_signature))
-    # TODO(b/159281959): Follow up and bind a reference here.
-    return ValueImpl(
-        building_blocks.Call(
-            building_blocks.Intrinsic(
-                intrinsic_defs.GENERIC_PLUS.uri,
-                computation_types.FunctionType(
-                    [self.type_signature, self.type_signature],
-                    self.type_signature)),
-            ValueImpl.get_comp(
-                to_value([self, other], None, self._context_stack))),
-        self._context_stack)
+    call = building_blocks.Call(
+        building_blocks.Intrinsic(
+            intrinsic_defs.GENERIC_PLUS.uri,
+            computation_types.FunctionType(
+                [self.type_signature, self.type_signature],
+                self.type_signature)),
+        ValueImpl.get_comp(to_value([self, other], None, self._context_stack)))
+    fc_context = self._context_stack.current
+    ref = fc_context.bind_computation_to_reference(call)
+    return ValueImpl(ref, self._context_stack)
 
 
 def _wrap_constant_as_value(const, context_stack):
@@ -264,9 +278,10 @@ def _wrap_constant_as_value(const, context_stack):
   tf_comp, _ = tensorflow_serialization.serialize_py_fn_as_tf_computation(
       lambda: tf.constant(const), None, context_stack)
   compiled_comp = building_blocks.CompiledComputation(tf_comp)
-  # TODO(b/159281959): Follow up and bind a reference here.
   called_comp = building_blocks.Call(compiled_comp)
-  return ValueImpl(called_comp, context_stack)
+  fc_context = context_stack.current
+  ref = fc_context.bind_computation_to_reference(called_comp)
+  return ValueImpl(ref, context_stack)
 
 
 def _wrap_sequence_as_value(elements, element_type, context_stack):
@@ -305,10 +320,10 @@ def _wrap_sequence_as_value(elements, element_type, context_stack):
   # Wraps the dataset as a value backed by a no-argument TensorFlow computation.
   tf_comp, _ = tensorflow_serialization.serialize_py_fn_as_tf_computation(
       _create_dataset_from_elements, None, context_stack)
-  # TODO(b/159281959): Follow up and bind a reference here.
-  return ValueImpl(
-      building_blocks.Call(building_blocks.CompiledComputation(tf_comp)),
-      context_stack)
+  call = building_blocks.Call(building_blocks.CompiledComputation(tf_comp))
+  fc_context = context_stack.current
+  ref = fc_context.bind_computation_to_reference(call)
+  return ValueImpl(ref, context_stack)
 
 
 def _dictlike_items_to_value(items, context_stack, container_type) -> ValueImpl:
@@ -362,7 +377,6 @@ def to_value(
       are encountered, as TensorFlow code should be sealed away from TFF
       federated context.
   """
-  # TODO(b/159281959): Follow up and bind references here where appropriate.
   py_typecheck.check_type(context_stack, context_stack_base.ContextStack)
   if type_spec is not None:
     type_spec = computation_types.to_type(type_spec)

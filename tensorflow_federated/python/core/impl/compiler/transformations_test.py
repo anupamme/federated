@@ -132,7 +132,6 @@ class RemoveLambdasAndBlocksTest(test.TestCase):
     self.assertNoLambdasOrBlocks(lambdas_and_blocks_removed)
 
   def test_with_higher_level_lambdas(self):
-    self.skipTest('b/146904968')
     data = building_blocks.Data('a', tf.int32)
     dummy = building_blocks.Reference('z', tf.int32)
     lowest_lambda = building_blocks.Lambda(
@@ -1071,20 +1070,29 @@ class TensorFlowGeneratorTest(test.TestCase):
 
 class TestTransformToCallDominantForm(test.TestCase):
 
-  def test_raises_called_lambda_returning_function(self):
+  def test_handles_called_lambda_returning_function(self):
     lower_level_lambda = building_blocks.Lambda(
         'x', tf.int32, building_blocks.Reference('x', tf.int32))
     higher_level_lambda = building_blocks.Lambda('y', tf.int32,
                                                  lower_level_lambda)
-    with self.assertRaises(ValueError):
-      transformations.transform_to_call_dominant(higher_level_lambda)
 
-  def test_raises_block_returning_function(self):
+    call_dominant_rep, modified = transformations.transform_to_call_dominant(
+        higher_level_lambda)
+
+    self.assertTrue(modified)
+    self.assertRegexMatch(call_dominant_rep.compact_representation(),
+                          [r'\(_([a-z]{3})1 -> \(_(\1)2 -> _(\1)2\)\)'])
+
+  def test_handles_block_returning_function(self):
     lower_level_lambda = building_blocks.Lambda(
         'x', tf.int32, building_blocks.Reference('x', tf.int32))
     blk = building_blocks.Block([], lower_level_lambda)
-    with self.assertRaises(ValueError):
-      transformations.transform_to_call_dominant(blk)
+
+    call_dominant_rep, modified = transformations.transform_to_call_dominant(
+        blk)
+    self.assertTrue(modified)
+    self.assertRegexMatch(call_dominant_rep.compact_representation(),
+                          [r'\(_([a-z]{3})1 -> _(\1)1\)'])
 
   def test_merges_nested_blocks(self):
     data = building_blocks.Data('a', tf.int32)
@@ -1096,8 +1104,8 @@ class TestTransformToCallDominantForm(test.TestCase):
         blk2)
 
     self.assertTrue(modified)
-    self.assertEqual(call_dominant_rep.compact_representation(),
-                     '(let _var1=a in _var1)')
+    self.assertRegexMatch(call_dominant_rep.compact_representation(),
+                          [r'\(let _([a-z]{3})1=a in _(\1)1\)'])
 
   def test_extracts_called_intrinsics_to_block(self):
     called_aggregate = test_utils.create_dummy_called_federated_aggregate(
@@ -1201,8 +1209,9 @@ class TestTransformToCallDominantForm(test.TestCase):
         lambda_accepting_int)
 
     self.assertTrue(modified)
-    self.assertEqual(call_dominant_rep.compact_representation(),
-                     '(_var1 -> (let _var3=(_var2 -> _var2)(_var1) in _var3))')
+    self.assertRegexMatch(call_dominant_rep.compact_representation(), [
+        r'\(_([a-z]{3})1 -> \(let _(\1)3=\(_(\1)2 -> _(\1)2\)\(_(\1)1\) in _(\1)3\)\)'
+    ])
 
 
 if __name__ == '__main__':

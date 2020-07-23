@@ -185,9 +185,8 @@ def type_to_tf_dtypes_and_shapes(type_spec: computation_types.Type):
         element_output = type_to_tf_dtypes_and_shapes(element_spec)
         output_dtypes.append(element_output[0])
         output_shapes.append(element_output[1])
-    if type_spec.is_tuple_with_py_container():
-      container_type = computation_types.NamedTupleTypeWithPyContainerType.get_container_type(
-          type_spec)
+    if type_spec.python_container is not None:
+      container_type = type_spec.python_container
 
       def build_py_container(elements):
         if (py_typecheck.is_named_tuple(container_type) or
@@ -258,14 +257,13 @@ def type_to_tf_structure(type_spec: computation_types.Type):
     named = element_outputs[0][0] is not None
     if not all((e[0] is not None) == named for e in element_outputs):
       raise ValueError('Tuple elements inconsistently named.')
-    if not type_spec.is_tuple_with_py_container():
+    if type_spec.python_container is None:
       if named:
         output = collections.OrderedDict(element_outputs)
       else:
         output = tuple(v for _, v in element_outputs)
     else:
-      container_type = computation_types.NamedTupleTypeWithPyContainerType.get_container_type(
-          type_spec)
+      container_type = type_spec.python_container
       if (py_typecheck.is_named_tuple(container_type) or
           py_typecheck.is_attrs(container_type)):
         output = container_type(**dict(element_outputs))
@@ -309,12 +307,8 @@ def type_to_py_container(value, type_spec):
   `anonymous_tuple.from_container`.
 
   Args:
-    value: An `anonymous_tuple.AnonymousTuple`, in which case this method
-      recurses, replacing all ``anonymous_tuple.AnonymousTuple``s with the
-      appropriate Python containers if possible (and keeping
-      `anonymous_tuple.AnonymousTuple` otherwise); or some other value, in which
-      case that value is returned unmodified immediately (terminating the
-      recursion).
+    value: A structure of anonymous tuples of values corresponding to
+      `type_spec`.
     type_spec: The `tff.Type` to which value should conform, possibly including
       `computation_types.NamedTupleTypeWithPyContainerType`.
 
@@ -326,15 +320,34 @@ def type_to_py_container(value, type_spec):
     ValueError: If the conversion is not possible due to a mix of named
       and unnamed values.
   """
-  if not isinstance(value, anonymous_tuple.AnonymousTuple):
-    return value
-
-  anon_tuple = value
   if type_spec.is_federated():
     structure_type_spec = type_spec.member
   else:
     structure_type_spec = type_spec
-  py_typecheck.check_type(structure_type_spec, computation_types.NamedTupleType)
+
+  if structure_type_spec.is_sequence():
+    element_type = structure_type_spec.element
+    if isinstance(value, list):
+      return [type_to_py_container(element, element_type) for element in value]
+    if isinstance(value, tf.data.Dataset):
+      # `tf.data.Dataset` does not understand `AnonymousTuple`, so the dataset
+      # in `value` must already be yielding Python containers. This is because
+      # when TFF is constructing datasets it always uses the proper Python
+      # container, so we simply return `value` here without modification.
+      return value
+    raise TypeError('Unexpected Python type for TF type {}: {}'.format(
+        structure_type_spec, type(value)))
+
+  if not structure_type_spec.is_tuple():
+    return value
+
+  if not isinstance(value, anonymous_tuple.AnonymousTuple):
+    # NOTE: When encountering non-anonymous tuples, we assume that
+    # this means that we're attempting to re-convert a value that
+    # already has the proper containers, and we short-circuit to
+    # avoid re-converting. This is a possibly dangerous assumption.
+    return value
+  anon_tuple = value
 
   def is_container_type_without_names(container_type):
     return (issubclass(container_type, (list, tuple)) and
@@ -345,15 +358,9 @@ def type_to_py_container(value, type_spec):
             py_typecheck.is_attrs(container_type) or
             issubclass(container_type, dict))
 
-  if structure_type_spec.is_tuple_with_py_container():
-    container_type = (
-        computation_types.NamedTupleTypeWithPyContainerType.get_container_type(
-            structure_type_spec))
-    container_is_anon_tuple = False
-  else:
-    # TODO(b/133228705): Consider requiring NamedTupleTypeWithPyContainerType.
-    container_is_anon_tuple = True
-    container_type = anonymous_tuple.AnonymousTuple
+  # TODO(b/133228705): Consider requiring NamedTupleTypeWithPyContainerType.
+  container_type = structure_type_spec.python_container or anonymous_tuple.AnonymousTuple
+  container_is_anon_tuple = structure_type_spec.python_container is None
 
   # Avoid projecting the `anonymous_tuple.AnonymousTuple` into a Python
   # container that is not supported.

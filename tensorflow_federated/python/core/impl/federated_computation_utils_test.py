@@ -47,7 +47,7 @@ class ZeroOrOneArgFnToBuildingBlockTest(parameterized.TestCase):
        lambda x: (x[1], x[0]),
        computation_types.NamedTupleType([tf.int32, tf.int32]),
        '(FEDERATED_foo -> <FEDERATED_foo[1],FEDERATED_foo[0]>)'),
-      ('constant', lambda: 'stuff', None, '( -> comp#'))
+      ('constant', lambda: 'stuff', None, '( -> (let fc_FEDERATED_symbol_0=comp#'))
   # pyformat: enable
   def test_zero_or_one_arg_fn_to_building_block(self, fn, parameter_type,
                                                 fn_str):
@@ -87,11 +87,8 @@ class ZeroOrOneArgFnToBuildingBlockTest(parameterized.TestCase):
     _, type_signature = federated_computation_utils.zero_or_one_arg_fn_to_building_block(
         fn, parameter_name, parameter_type, context_stack_impl.context_stack)
     self.assertIs(type(type_signature.result), type(exepcted_result_type))
-    self.assertIs(
-        computation_types.NamedTupleTypeWithPyContainerType.get_container_type(
-            type_signature.result),
-        computation_types.NamedTupleTypeWithPyContainerType.get_container_type(
-            exepcted_result_type))
+    self.assertIs(type_signature.result.python_container,
+                  exepcted_result_type.python_container)
     self.assertEqual(type_signature.result, exepcted_result_type)
 
 
