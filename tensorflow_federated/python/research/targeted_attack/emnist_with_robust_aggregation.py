@@ -24,7 +24,7 @@ import tensorflow as tf
 import tensorflow_federated as tff
 import aggregate_fn
 import attacked_fedavg
-
+from tensorflow_federated.python.common_libs import py_typecheck
 FLAGS = flags.FLAGS
 
 # training parameters
