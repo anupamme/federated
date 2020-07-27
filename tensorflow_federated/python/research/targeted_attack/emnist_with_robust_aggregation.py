@@ -73,7 +73,6 @@ use_nchw_format = False
 data_format = 'channels_first' if use_nchw_format else 'channels_last'
 data_shape = [1, 28, 28] if use_nchw_format else [28, 28, 1]
 
-import py_typecheck
 
 
 def build_stateless_robust_aggregation(model_type,
