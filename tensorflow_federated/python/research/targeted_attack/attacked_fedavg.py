@@ -37,10 +37,10 @@ import attr
 import tensorflow as tf
 import tensorflow_federated as tff
 
-from aggregate_fn import build_stateless_mean
+from tensorflow_federated.python.research.targeted_attack.aggregate_fn import build_stateless_mean
 from tensorflow_federated.python.tensorflow_libs import tensor_utils
+from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.research.robust_aggregation import robust_federated_aggregation as rfa
-import py_typecheck
 
 
 @attr.s(eq=False, frozen=True)
@@ -353,8 +353,6 @@ def build_client_update_fn(model_fn, optimizer_fn, client_update_tf,
 
 import tensorflow as tf
 import tensorflow_federated as tff
-
-import py_typecheck
 
 
 #def build_stateless_robust_aggregation(model_type,
