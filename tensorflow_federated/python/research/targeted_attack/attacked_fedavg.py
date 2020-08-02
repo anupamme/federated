@@ -408,6 +408,65 @@ import py_typecheck
 #  return tff.utils.StatefulAggregateFn(
 #      initialize_fn=lambda: (), next_fn=_stateless_next)
 
+class DummyClientComputation(tff.learning.framework.ClientDeltaFn):
+  """Client TensorFlow logic for example.
+
+  Designed to mimic the class `ClientFedAvg` from federated_averaging.py
+  """
+
+  def __init__(self, model, client_weight_fn=None):
+    """Creates the client computation for Federated Averaging.
+
+    Args:
+      model: A `tff.learning.Model`.
+      client_weight_fn: Optional argument is ignored
+    """
+    del client_weight_fn
+    self._model = tff.learning.framework.enhance(model)
+    py_typecheck.check_type(self._model, tff.learning.framework.EnhancedModel)
+    self._client_weight_fn = None
+
+  @property
+  def variables(self):
+    return []
+
+  @tf.function
+  def __call__(self, dataset, initial_weights):
+    del initial_weights
+    model = self._model
+
+    @tf.function
+    def reduce_fn_num_examples(num_examples_sum, batch):
+      """Count number of examples."""
+      num_examples_in_batch = tf.shape(batch['x'])[0]
+      return num_examples_sum + num_examples_in_batch
+
+    @tf.function
+    def reduce_fn_dataset_mean(sum_vector, batch):
+      """Sum all the examples in the local dataset."""
+      sum_batch = tf.reshape(tf.reduce_sum(batch['x'], [0]), (-1, 1))
+      return sum_vector + sum_batch
+
+    num_examples_sum = dataset.reduce(
+        initial_state=tf.constant(0), reduce_func=reduce_fn_num_examples)
+    example_vector_sum = dataset.reduce(
+        initial_state=tf.zeros((DIM, 1)), reduce_func=reduce_fn_dataset_mean)
+
+    # create a list with the same structure and type as model.trainable
+    # containing a mean of all the examples in the local dataset. Note: this
+    # works for a linear model only (as in the example above)
+    weights_delta = [example_vector_sum / tf.cast(num_examples_sum, tf.float32)]
+    aggregated_outputs = model.report_local_outputs()
+    weights_delta, has_non_finite_delta = (
+        tensor_utils.zero_all_if_any_non_finite(weights_delta))
+    weights_delta_weight = tf.cast(num_examples_sum, tf.float32)
+
+    return tff.learning.framework.ClientOutput(
+        weights_delta, weights_delta_weight, aggregated_outputs,
+        collections.OrderedDict(
+            num_examples=num_examples_sum,
+            has_non_finite_delta=has_non_finite_delta,
+        ))
 
 def build_robust_federated_aggregation_process(model_fn,
                                                num_communication_passes=5,
@@ -424,15 +483,23 @@ def build_robust_federated_aggregation_process(model_fn,
   Returns:
     A `tff.templates.IterativeProcess`.
   """
+  
+  server_optimizer_fn = lambda: tf.keras.optimizers.SGD(learning_rate=1.0)
+  
+  def client_fed_avg(model_fn):
+    return DummyClientComputation(model_fn(), client_weight_fn=None)
+  
   # build throwaway model simply to infer types
   with tf.Graph().as_default():
+    
     model_type = tff.framework.type_from_tensors(model_fn().weights.trainable)
-  robust_aggregation_fn = rfa.build_stateless_robust_aggregation(
-      model_type,
-      num_communication_passes=num_communication_passes,
-      tolerance=tolerance)
-  return tff.learning.build_federated_averaging_process(
-      model_fn, stateful_delta_aggregate_fn=robust_aggregation_fn)
+  
+    stateful_delta_aggregate_fn = rfa.build_stateless_robust_aggregation(
+        model_type, num_communication_passes=num_passes, tolerance=tolerance)
+  
+  return tff.learning.framework.build_model_delta_optimizer_process(
+        model_fn, client_fed_avg, server_optimizer_fn,
+        stateful_delta_aggregate_fn)
 
 def build_run_one_round_fn_attacked(server_update_fn, client_update_fn,
                                     stateful_delta_aggregate_fn,
