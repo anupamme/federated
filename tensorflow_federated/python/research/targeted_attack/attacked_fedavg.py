@@ -40,7 +40,7 @@ import tensorflow_federated as tff
 from tensorflow_federated.python.research.targeted_attack.aggregate_fn import build_stateless_mean
 from tensorflow_federated.python.tensorflow_libs import tensor_utils
 from tensorflow_federated.python.common_libs import py_typecheck
-from tensorflow_federated.python.research.robust_aggregation import robust_federated_aggregation as rfa
+from tensorflow_federated.python.research.targeted_attack import robust_federated_aggregation as rfa
 
 
 @attr.s(eq=False, frozen=True)
